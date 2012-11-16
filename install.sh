@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# curl github.com/evanmoran/quick/install.sh || sh
+# curl https://raw.github.com/evanmoran/quick/master/install.sh | sh
 #
 # Constants
 # ------------------------------------------------------
@@ -47,14 +47,13 @@ cat > "$PREFIX/quick" <<EOF
 #!/bin/sh
 
 # Environment variable to QUICK_DIR
-QUICK_DIR=\${QUICK_DIR:-"$INSTALL_DIR"}
+export QUICK_DIR=\${QUICK_DIR:-"$INSTALL_DIR"}
 
 # Execute quick
-"\$QUICK_DIR/bin/quick"
+"\$QUICK_DIR/bin/quick" "\$@"
+
 EOF
 
 # Give quick executable permissions
 chmod 755 "$PREFIX/quick"
-
-# ln -s "$INSTALL_DIR/bin/quick" "$PREFIX/quick"
 

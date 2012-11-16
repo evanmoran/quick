@@ -2,24 +2,31 @@
 
 import argparse
 import sys
+import os
+import subprocess
+import glob
+import webbrowser
+from pprint import pprint
 
 # Constants
 # =========================================================
 
-# Version
-VERSION = "v0.0.1\n"
+VERSION = "v0.0.2\n"
 
-# Short Usage
+QUICK_DIR = os.environ.get('QUICK_DIR') or os.path.join(os.environ.get('HOME'), ".quick")
+QUICK_CACHE_DIR = os.path.join(QUICK_DIR, 'cache')
+
 SHORT_USAGE = """
   quick [options] topic[:subtopic]
 
     -h, --help                    Output usage information
     -l, --list                    List all quick files with topic
     -e, --edit                    Edit topic or subtopic
-    -w, --web                     Open quick file in website\n
+    -w, --web                     Open quick file in website
+    -u, --update                  Update quick and its topics cache
+
 """
 
-# Long Usage
 LONG_USAGE = """
   Usage:
 
@@ -32,6 +39,7 @@ LONG_USAGE = """
     -l, --list                    List all quick files with topic
     -e, --edit                    Edit topic or subtopic
     -w, --web                     Open quick file in website
+    -u, --update                  Update quick and its topics cache
     --color                       Force color printing
     --nocolor                     Force no color printing
     --version                     Output the version number
@@ -49,11 +57,10 @@ LONG_USAGE = """
     quick --edit git              Edit or create `git` topic
     quick --edit git:config       Edit or create `git:config` subtopic
     quick --list git              List `git` subtopics
-    quick --web git               Open `git` topic in a website\n
-"""
+    quick --web git               Open `git` topic in a website
+    quick --update                Update quick
 
-NO_TOPIC = "__NO_TOPIC__"
-NO_SUBTOPIC = "__NO_SUBTOPIC__"
+"""
 
 # git log -n1 --pretty='#H'
 
@@ -74,21 +81,58 @@ ColorMode = enum(AUTO=1, ON=2, OFF=2)
 # Helpers
 # =========================================================
 
+class working_dir:
+  def __init__(self, directory):
+    self.scoped_dir = directory
+  def __enter__(self):
+    self.old_dir = os.getcwd()
+    os.chdir(self.scoped_dir)
+  def __exit__(self, type, value, traceback):
+    os.chdir(self.old_dir)
+
+# call: execute command as subprocess with list of arguments
+# returns triplet: code, out, err
+def call(args):
+  proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+  out, err = proc.communicate()
+  code = proc.returncode
+  if code != Exit.SUCCESS:
+    raise BaseException(err)
+  return code, out, err
+
+# Execute git command
+def git(directory, args):
+  with working_dir(directory):
+    return call(['git'] + args)
+
+class Task:
+  def __init__(self, task_name):
+    self.task_name = task_name
+  def __enter__(self):
+    sys.stdout.write(self.task_name + '... ')
+    sys.stdout.flush()
+  def __exit__(self, type, value, traceback):
+    if type == None:
+      print 'OK'
+    else:
+      print 'ERROR (%s)' % value
+
 # parse_topic
 # ---------------------------------------------------------
 # parse_topic("git:config")
 #   => {'list'=False, 'edit'=False, 'topic'='git', 'subtopic'='config'}
 # parse_topic("git:")
-#   => {'list'=True, 'edit'=False, 'topic'='git', 'subtopic'=NO_SUBTOPIC}
+#   => {'list'=True, 'edit'=False, 'topic'='git', 'subtopic'=None}
 
 def parse_topic(topic):
-  out = {'list':False, 'edit':False, 'topic':NO_TOPIC, 'subtopic':NO_SUBTOPIC}
-  if topic == "" or topic == NO_TOPIC:
+  out = {'list':False, 'edit':False, 'topic':None, 'subtopic':None}
+  if topic == "" or topic == None:
     return out
   if topic[-1] == ':':
     out['list'] = True
   elif topic[-1] == '+':
     out['edit'] = True
+    topic = topic[:-1]
   (_topic, _partition, _subtopic) = topic.partition(':')
   if _topic:
     out['topic'] = _topic
@@ -96,40 +140,109 @@ def parse_topic(topic):
     out['subtopic'] = _subtopic
   return out
 
-def update():
-  pass
+# Print errors with special formatting and USAGE
+def die(message, error_code = Exit.ARGUMENT_ERROR):
+  sys.stderr.write('\n  ERROR: %s\n' % message)
+  sys.stdout.write(SHORT_USAGE)
+  exit(error_code)
 
+# Example: 'git:config'
+def cache_name(topic, subtopic=None):
+  fname = topic
+  if subtopic:
+    fname += ':' + subtopic
+  return fname
+
+# Example: 'git:config.md'
+def cache_file(topic, subtopic=None):
+  return cache_name(topic, subtopic) + '.md'
+
+# Example: 'full/path/git:config.md'
+def cache_path(topic, subtopic=None):
+  fname = cache_file(topic, subtopic)
+  return os.path.join(QUICK_CACHE_DIR, fname)
+
+def cache_file_exists(topic, subtopic=None):
+  return os.path.exists(cache_path(topic, subtopic))
+
+def cache_list(topic, subtopic=None, deep=True):
+  if topic:
+    glob_name = cache_file(topic, '*')
+  else:
+    glob_name = cache_file('*')
+
+  files = glob.glob(os.path.join(QUICK_CACHE_DIR, glob_name))
+
+  # Filter out subtopics, ':', when listing everything
+  if not topic and not deep:
+    files = [f for f in files if f.find(':') == -1]
+
+  # Remove extension and path
+  ext = '.md'
+  return [os.path.basename(f)[0:-len(ext)] for f in files]
 
 # Commands
 # =========================================================
 
-def command_none():
-  sys.stdout.write(SHORT_USAGE)
-  return Exit.SUCCESS
-
 def command_version():
+  print 'command_version'
   sys.stdout.write(VERSION)
   return Exit.SUCCESS
 
+def command_usage():
+  sys.stdout.write(SHORT_USAGE)
+  return Exit.SUCCESS
+
 def command_help():
+  print 'command_help'
   parser.print_help()
   return Exit.SUCCESS
 
 def command_update():
-  print 'command_update'
-  update()
+  try:
+    with Task('Updating quick'):
+      code, out, err = git(QUICK_DIR, ['pull', '-q'])
+      if code != 0:
+        raise BaseException(err)
+    with Task('Updating topics'):
+      code, out, err = git(QUICK_CACHE_DIR, ['pull', '-q'])
+  except:
+    pass  # Absorb error
   return Exit.SUCCESS
 
-def command_list(topic=NO_TOPIC, subtopic=NO_SUBTOPIC):
-  print 'command_list %(topic)s, %(subtopic)s' % locals()
+def command_list(topic=None):
+  files = cache_list(topic, deep=False)
+  for f in files:
+    print f
   return Exit.SUCCESS
 
-def command_edit(topic=NO_TOPIC, subtopic=NO_SUBTOPIC):
-  print 'command_edit %(topic)s, %(subtopic)s' % locals()
+def command_edit(topic, subtopic=None):
+  topic_name = cache_name(topic, subtopic)
+
+  wiki_url = 'https://github.com/evanmoran/quick/wiki/%s' % topic_name
+  edit_url = 'https://github.com/evanmoran/quick/wiki/%s/_edit' % topic_name
+
+  # Check to see if file exists in cache
+  if cache_file_exists(topic, subtopic):
+    webbrowser.open(edit_url)
+  else:
+    webbrowser.open(wiki_url)
   return Exit.SUCCESS
 
-def command_view(topic=NO_TOPIC, subtopic=NO_SUBTOPIC):
-  print 'command_view %(topic)s, %(subtopic)s' % locals()
+def command_view(topic, subtopic=None):
+  file_path = os.path.join(QUICK_CACHE_DIR, topic)
+  if subtopic != None:
+    file_path = os.path.join(file_path, subtopic)
+  file_path = file_path + '.md'
+
+  try:
+    with open(file_path) as f:
+      print(f.read())
+  except:
+    name = 'Topic'
+    if subtopic != None:
+      name = 'Subtopic'
+    print '%s not found.' % name
   return Exit.SUCCESS
 
 # Parse Arguments
@@ -137,24 +250,24 @@ def command_view(topic=NO_TOPIC, subtopic=NO_SUBTOPIC):
 
 class ArgParser(argparse.ArgumentParser):
   def error(self, message):
-    sys.stderr.write('\n  ERROR: %s\n' % message)
-    sys.stdout.write(SHORT_USAGE)
-    sys.exit(Exit.ARGUMENT_ERROR)
+    die(message, Exit.ARGUMENT_ERROR)
 
   def print_help(self):
     sys.stdout.write(LONG_USAGE)
 
-parser = ArgParser()
+parser = ArgParser(add_help=False)
 group = parser.add_mutually_exclusive_group()
 group.add_argument('-e', '--edit', action='store_true', default=False)
 group.add_argument('-l', '--list', action='store_true', default=False)
 group.add_argument('-w', '--web', action='store_true', default=False)
+group.add_argument('-u', '--update', action='store_true', default=False)
+group.add_argument('-h', '--help', action='store_true', default=False)
 group.add_argument('--version', action='store_true', default=False)
 parser.add_argument('--verbose', action='store_true', default=False)
 parser.add_argument('--color', action='store_true', default=False)
 parser.add_argument('--nocolor', action='store_true', default=False)
 
-parser.add_argument('topic', nargs='?', default=NO_TOPIC)
+parser.add_argument('topic', nargs='?', default=None)
 
 args = parser.parse_args()
 
@@ -165,31 +278,38 @@ if args.color:
 elif args.nocolor:
   args.color_mode = ColorMode.OFF
 
-from pprint import pprint
 # pprint(args)
 
 # Call Commands
 # ----------------------------------------------------------
+
+# Parse the topic:subtopic if it exists
+parsed_topic = parse_topic(args.topic)
 
 # Version
 if args.version == True:
   exit(command_version())
 
 # Help
-elif args.topic == NO_TOPIC:
-  exit(command_none())
-
 elif args.help:
   exit(command_help())
 
-# All the rest have topics so lets parse that
-parsed_topic = parse_topic(args.topic)
+# Update
+elif args.update:
+  exit(command_update())
 
+# List
+elif args.list or parsed_topic['list']:
+  exit(command_list(topic=parsed_topic['topic']))
+
+# None
+elif args.topic == None:
+  exit(command_usage())
+
+# Edit
 if args.edit or parsed_topic['edit']:
   exit(command_edit(topic=parsed_topic['topic'], subtopic=parsed_topic['subtopic']))
 
-elif args.list or parsed_topic['list']:
-  exit(command_list(topic=parsed_topic['topic'], subtopic=parsed_topic['subtopic']))
-
+# View
 else:
   exit(command_view(topic=parsed_topic['topic'], subtopic=parsed_topic['subtopic']))
