@@ -1,12 +1,4 @@
 #!/usr/bin/env python
-#
-# quick v0.01
-#
-
-# print 'quick'
-
-# parser = argparse.ArgumentParser()
-# parser.add_option("-m", type=check_mytype)
 
 import argparse
 import sys
@@ -174,7 +166,7 @@ elif args.nocolor:
   args.color_mode = ColorMode.OFF
 
 from pprint import pprint
-pprint(args)
+# pprint(args)
 
 # Call Commands
 # ----------------------------------------------------------
