@@ -6,6 +6,7 @@ import os
 import subprocess
 import glob
 import webbrowser
+import re
 from pprint import pprint
 
 # Constants
@@ -215,6 +216,130 @@ def cache_update(quiet=True):
   except:
     pass  # Absorb error
 
+
+LineState = enum('PARAGRAPH', 'TITLE', 'BULLETED', 'NUMBERED', 'BLOCKQUOTE', 'CODEBLOCK', 'SEPERATOR')
+emptyLineExp = re.compile('^\s*$')
+blockquoteExp = re.compile('^\s{0,3}>')
+codeblockExp = re.compile('^(\t|    )')
+numberedExp = re.compile('^\s*\d+\.\s')
+bulletedExp = re.compile('^\s*[*-]\s')
+
+def _is_underline(line):
+  return (line[0:3] == '===' or line[0:3] == '---')
+
+def _is_seperator(line):
+  return line[0:3] == '---'
+
+def _line_state_is_list(state):
+  return state == LineState.BULLETED or state == LineState.NUMBERED
+
+def color_for_state(state):
+  colors_map = {
+      LineState.PARAGRAPH:  'normal',
+      LineState.TITLE:      'blue',
+      LineState.NUMBERED:   'green',
+      LineState.BULLETED:   'yellow',
+      LineState.BLOCKQUOTE: 'purple',
+      LineState.CODEBLOCK:  'cyan',
+      LineState.SEPERATOR:  'red'
+  }
+  return colors_map.get(state) or 'normal'
+
+def parse_line(line, initial_state, last_line_was_empty, next_line):
+  line_state = LineState.PARAGRAPH
+  line_is_empty = False
+
+  # \n
+  if emptyLineExp.match(line):
+    line_is_empty = True
+    if _line_state_is_list(initial_state):
+      line_state = initial_state
+    else:
+      line_state = None
+
+  # ### Title
+  elif line[0] == '#':
+    line_state = LineState.TITLE
+
+  # > Blockquote
+  elif blockquoteExp.match(line):
+    if initial_state == LineState.BLOCKQUOTE or last_line_was_empty:
+      line_state = LineState.BLOCKQUOTE
+
+  #     Code block
+  elif codeblockExp.match(line):
+    if initial_state == LineState.CODEBLOCK or last_line_was_empty:
+      line_state = LineState.CODEBLOCK
+
+  #   Title followed by --------
+  elif _is_underline(next_line):
+    line_state = LineState.TITLE
+
+  elif initial_state == LineState.TITLE and _is_underline(line) and not last_line_was_empty:
+    line_state = LineState.TITLE
+    line_is_empty = True # Don't continue the TITLE after the underline
+
+  elif numberedExp.match(line):
+    line_state = LineState.NUMBERED
+
+  elif bulletedExp.match(line):
+    line_state = LineState.BULLETED
+
+  elif _is_seperator(line):
+    line_state = LineState.SEPERATOR
+
+  if line_state == LineState.PARAGRAPH and (_line_state_is_list(initial_state) or initial_state == LineState.BLOCKQUOTE) and not last_line_was_empty:
+    line_state = initial_state
+
+  return line_state, line_is_empty
+
+
+def colorize_markdown(markdown):
+  previous_line = None
+  line = ''
+  last_line_was_empty = True
+  line_state = None
+
+  output = ''
+  for next_line in markdown.split('\n'):
+    line_state, last_line_was_empty = parse_line(line, line_state, last_line_was_empty, next_line)
+    output += color(line, color_for_state(line_state)) + '\n'
+
+    # Prepare for next iteration
+    previous_line = line
+    line = next_line
+
+  # Parse the last line
+  next_line = ''
+  line_state, last_line_was_empty = parse_line(line, line_state, last_line_was_empty, next_line)
+  output += color(line, color_for_state(line_state)) + '\n'
+
+  return output
+
+def print_color(markdown, color_mode):
+  # Detect color mode
+  if color_mode == ColorMode.AUTO and sys.stdout.isatty():
+    color_mode = ColorMode.ON
+  if color_mode == ColorMode.ON:
+    markdown = colorize_markdown(markdown)
+  print(markdown)
+
+COLOR_CODES = {
+    'black':    '0;30',     'bright gray':  '0;37',
+    'blue':     '0;34',     'white':        '1;37',
+    'green':    '0;32',     'bright blue':  '1;34',
+    'cyan':     '0;36',     'bright green': '1;32',
+    'red':      '0;31',     'bright cyan':  '1;36',
+    'purple':   '0;35',     'bright red':   '1;31',
+    'yellow':   '0;33',     'bright purple':'1;35',
+    'dark gray':'1;30',     'bright yellow':'1;33',
+    'normal':   '0'
+}
+
+def color(text, color):
+  """Return a string wrapped in ANSI color"""
+  return "\033["+COLOR_CODES[color]+"m"+text+"\033[0m"
+
 # Commands
 # =========================================================
 
@@ -272,20 +397,20 @@ def command_web(topic, subtopic=None, edit=False):
 def command_edit(topic, subtopic=None):
   return command_web(topic, subtopic, edit=True)
 
-def command_view(topic, subtopic=None):
-  file_path = os.path.join(QUICK_CACHE_DIR, topic)
-  if subtopic != None:
-    file_path = os.path.join(file_path, subtopic)
-  file_path = file_path + '.md'
+def command_view(topic, subtopic=None, color_mode=ColorMode.AUTO):
+  file_path = cache_path(topic, subtopic)
 
   try:
-    with open(file_path) as f:
-      print(f.read())
+    f = open(file_path)
   except:
     name = 'Topic'
     if subtopic != None:
       name = 'Subtopic'
     print '%s not found.' % name
+  else:
+    with f:
+      print_color(f.read(), color_mode)
+
   return Exit.SUCCESS
 
 # Parse Arguments
@@ -359,4 +484,4 @@ elif args.edit or parsed_topic['edit']:
 
 # View
 else:
-  exit(command_view(topic=parsed_topic['topic'], subtopic=parsed_topic['subtopic']))
+  exit(command_view(topic=parsed_topic['topic'], subtopic=parsed_topic['subtopic'], color_mode=args.color_mode))
