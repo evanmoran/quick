@@ -11,7 +11,7 @@ from pprint import pprint
 # Constants
 # =========================================================
 
-VERSION = "v0.0.2\n"
+VERSION = "v0.0.3\n"
 
 QUICK_DIR = os.environ.get('QUICK_DIR') or os.path.join(os.environ.get('HOME'), ".quick")
 QUICK_CACHE_DIR = os.path.join(QUICK_DIR, 'cache')
@@ -106,16 +106,19 @@ def git(directory, args):
     return call(['git'] + args)
 
 class Task:
-  def __init__(self, task_name):
+  def __init__(self, task_name, quiet=True):
     self.task_name = task_name
+    self.quiet = quiet
   def __enter__(self):
-    sys.stdout.write(self.task_name + '... ')
-    sys.stdout.flush()
+    if not self.quiet:
+      sys.stdout.write(self.task_name + '... ')
+      sys.stdout.flush()
   def __exit__(self, type, value, traceback):
-    if type == None:
-      print 'OK'
-    else:
-      print 'ERROR (%s)' % value
+    if not self.quiet:
+      if type == None:
+        print 'OK'
+      else:
+        print 'ERROR (%s)' % value
 
 # parse_topic
 # ---------------------------------------------------------
@@ -125,14 +128,24 @@ class Task:
 #   => {'list'=True, 'edit'=False, 'topic'='git', 'subtopic'=None}
 
 def parse_topic(topic):
-  out = {'list':False, 'edit':False, 'topic':None, 'subtopic':None}
+  out = {'list':False, 'edit':False, 'web':False, 'topic':None, 'subtopic':None}
   if topic == "" or topic == None:
     return out
+
+  # End in ':' lists
   if topic[-1] == ':':
     out['list'] = True
+
+  # End in '+' edits
   elif topic[-1] == '+':
     out['edit'] = True
     topic = topic[:-1]
+
+  # End in '/' opens web
+  elif topic[-1] == '/':
+    out['web'] = True
+    topic = topic[:-1]
+
   (_topic, _partition, _subtopic) = topic.partition(':')
   if _topic:
     out['topic'] = _topic
@@ -181,6 +194,27 @@ def cache_list(topic, subtopic=None, deep=True):
   ext = '.md'
   return [os.path.basename(f)[0:-len(ext)] for f in files]
 
+def _update_quick(quiet=True):
+  with Task('Updating quick', quiet):
+    code, out, err = git(QUICK_DIR, ['pull', '-q'])
+
+def _update_topics(quiet=True):
+  with Task('Updating topics', quiet):
+    code, out, err = git(QUICK_CACHE_DIR, ['pull', '-q'])
+
+def quick_update(quiet=True):
+  try:
+    _update_quick(quiet)
+    _update_topics(quiet)
+  except:
+    pass  # Absorb error
+
+def cache_update(quiet=True):
+  try:
+    _update_topics(quiet)
+  except:
+    pass  # Absorb error
+
 # Commands
 # =========================================================
 
@@ -199,15 +233,7 @@ def command_help():
   return Exit.SUCCESS
 
 def command_update():
-  try:
-    with Task('Updating quick'):
-      code, out, err = git(QUICK_DIR, ['pull', '-q'])
-      if code != 0:
-        raise BaseException(err)
-    with Task('Updating topics'):
-      code, out, err = git(QUICK_CACHE_DIR, ['pull', '-q'])
-  except:
-    pass  # Absorb error
+  quick_update(quiet=False)
   return Exit.SUCCESS
 
 def command_list(topic=None):
@@ -216,18 +242,35 @@ def command_list(topic=None):
     print f
   return Exit.SUCCESS
 
-def command_edit(topic, subtopic=None):
+def command_web(topic, subtopic=None, edit=False):
   topic_name = cache_name(topic, subtopic)
 
   wiki_url = 'https://github.com/evanmoran/quick/wiki/%s' % topic_name
   edit_url = 'https://github.com/evanmoran/quick/wiki/%s/_edit' % topic_name
+  new_url = 'https://github.com/evanmoran/quick/wiki/_new?wiki[name]=%s' % topic_name
+
+  if edit:
+    cache_update(quiet=False)
 
   # Check to see if file exists in cache
   if cache_file_exists(topic, subtopic):
-    webbrowser.open(edit_url)
+    if edit:
+      webbrowser.open(edit_url)
+    else:
+      webbrowser.open(wiki_url)
   else:
-    webbrowser.open(wiki_url)
+    if edit:
+      webbrowser.open(new_url)
+    else:
+      name = 'Topic'
+      if subtopic != None:
+        name = 'Subtopic'
+      print '%s not found.' % name
+
   return Exit.SUCCESS
+
+def command_edit(topic, subtopic=None):
+  return command_web(topic, subtopic, edit=True)
 
 def command_view(topic, subtopic=None):
   file_path = os.path.join(QUICK_CACHE_DIR, topic)
@@ -306,8 +349,12 @@ elif args.list or parsed_topic['list']:
 elif args.topic == None:
   exit(command_usage())
 
+# Web
+if args.web or parsed_topic['web']:
+  exit(command_web(topic=parsed_topic['topic'], subtopic=parsed_topic['subtopic']))
+
 # Edit
-if args.edit or parsed_topic['edit']:
+elif args.edit or parsed_topic['edit']:
   exit(command_edit(topic=parsed_topic['topic'], subtopic=parsed_topic['subtopic']))
 
 # View
