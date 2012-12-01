@@ -16,7 +16,7 @@
 3. Write for smart [noobs](http://en.wikipedia.org/wiki/Noob)
 4. Prefer code snippets over paragraphs
 
-### One Line Install
+### Install
 
     curl https://raw.github.com/evanmoran/quick/master/install.sh | sh
 
